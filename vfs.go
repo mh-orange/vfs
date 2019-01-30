@@ -29,7 +29,7 @@ var (
 	// ErrInvalidSeek indicates a seek that moves the offset before the beginning of the file
 	ErrInvalidSeek = errors.New("seek before beginning of file")
 
-	// ErrReadOnly indicates an operation that requires write flags was attemped on a file that
+	// ErrReadOnly indicates an operation that requires write flags was attempted on a file that
 	// is open read-only
 	ErrReadOnly = errors.New("file is open read only")
 
