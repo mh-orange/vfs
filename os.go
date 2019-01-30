@@ -20,34 +20,44 @@ import (
 	"path/filepath"
 )
 
-type osFs struct {
+// OsFs is a VFS backed by the operating system filesystem
+type OsFs struct {
 	root string
 }
 
 // NewOsFs will return a new FileSystem that is backed by the operating
 // system functions in the 'os' package.  The OsFs filesystem will be
 // rooted in the given path
-func NewOsFs(root string) FileSystem {
-	return &osFs{filepath.Clean(root)}
+func NewOsFs(root string) *OsFs {
+	return &OsFs{filepath.Clean(root)}
 }
 
-func (osfs *osFs) Create(filename string) (io.ReadWriteSeeker, error) {
-	return os.Create(filename)
-}
-
-func (osfs *osFs) Chmod(filename string, mode os.FileMode) error {
+// Chmod changes the mode of the named file to mode.
+func (osfs *OsFs) Chmod(filename string, mode os.FileMode) error {
 	return os.Chmod(osfs.path(filename), mode)
 }
 
-func (osfs *osFs) Open(filename string) (io.ReadSeeker, error) {
+// Create creates the named file with mode 0666 (before umask), truncating it if it already exists.  If
+// successful, an io.ReadWriteSeeker is returned
+func (osfs *OsFs) Create(filename string) (io.ReadWriteSeeker, error) {
+	return os.Create(filename)
+}
+
+// Open opens the named file for reading.  If successful, an io.ReadSeeker is returned
+func (osfs *OsFs) Open(filename string) (io.ReadSeeker, error) {
 	return os.Open(osfs.path(filename))
 }
 
-func (osfs *osFs) OpenFile(filename string, flag OpenFlag, perm os.FileMode) (io.ReadWriteSeeker, error) {
+// OpenFile is the generalized open call; most users will use Open or Create instead.
+// It opens the named file with specified flag (O_RDONLY etc.) and perm (before umask),
+// if applicable. If successful, an io.ReadWriteSeeker is returned.  If the OpenFlag was
+// set to O_RDONLY then the io.ReadWriteSeeker itself may not be writable.  This is
+// dependent on the implementation
+func (osfs *OsFs) OpenFile(filename string, flag OpenFlag, perm os.FileMode) (io.ReadWriteSeeker, error) {
 	return os.OpenFile(osfs.path(filename), int(flag), perm)
 }
 
-func (osfs *osFs) path(filename string) string {
+func (osfs *OsFs) path(filename string) string {
 	if len(filename) == 0 {
 		return osfs.root
 	}
@@ -58,14 +68,18 @@ func (osfs *osFs) path(filename string) string {
 	return filepath.Join(osfs.root, filepath.Clean(filename))
 }
 
-func (osfs *osFs) ReadFile(filename string) (content []byte, err error) {
+// ReadFile reads the file named by filename and returns the contents.
+func (osfs *OsFs) ReadFile(filename string) (content []byte, err error) {
 	return readFile(osfs, filename)
 }
 
-func (osfs *osFs) Stat(filename string) (os.FileInfo, error) {
+// Stat returns the FileInfo structure describing file.
+func (osfs *OsFs) Stat(filename string) (os.FileInfo, error) {
 	return os.Stat(osfs.path(filename))
 }
 
-func (osfs *osFs) WriteFile(filename string, content []byte, perm os.FileMode) error {
+// WriteFile writes data to a file named by filename. If the file does not exist, WriteFile
+// creates it with permissions perm; otherwise WriteFile truncates it before writing.
+func (osfs *OsFs) WriteFile(filename string, content []byte, perm os.FileMode) error {
 	return writeFile(osfs, filename, content, perm)
 }

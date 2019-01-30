@@ -38,12 +38,41 @@ func (mf *memFile) touch() {
 	mf.mu.Unlock()
 }
 
-func (mf *memFile) blockSize() (size int64) {
+func (mf *memFile) readBlock(block, offset int64, p []byte) (n int, err error) {
 	mf.mu.Lock()
-	if len(mf.blocks) > 0 {
-		size = int64(blocksize*(len(mf.blocks)-1) + len(mf.blocks[len(mf.blocks)-1]))
+	defer mf.mu.Unlock()
+	if (block*blocksize)+offset < mf.size {
+		if mf.size < (block+1)*blocksize {
+			sizeOffset := mf.size - (block * blocksize)
+			n = copy(p, mf.blocks[block][offset:sizeOffset])
+		} else {
+			n = copy(p, mf.blocks[block][offset:])
+		}
+	} else {
+		err = io.EOF
 	}
-	mf.mu.Unlock()
+	return
+}
+
+func (mf *memFile) writeBlock(block, offset int64, p []byte) (n int, err error) {
+	mf.mu.Lock()
+	defer mf.mu.Unlock()
+
+	bsize := int64(0)
+	size := block*blocksize + offset
+	for {
+		if len(mf.blocks) > 0 {
+			bsize = int64(blocksize*(len(mf.blocks)-1) + len(mf.blocks[len(mf.blocks)-1]))
+		}
+
+		if size < bsize {
+			break
+		}
+		mf.blocks = append(mf.blocks, make([]byte, blocksize))
+	}
+
+	n = copy(mf.blocks[block][offset:], p)
+	mf.size += int64(n)
 	return
 }
 
@@ -85,38 +114,17 @@ func (rws *readWriteSeeker) Read(p []byte) (n int, err error) {
 		return 0, ErrWriteOnly
 	}
 
-	rws.file.mu.Lock()
-	size := rws.file.size
-	rws.file.mu.Unlock()
-	if rws.offset >= size {
-		return 0, io.EOF
-	}
-
 	maxN := len(p)
+	copied := 0
 	for n < maxN && err == nil {
-		rws.file.mu.Lock()
-		size = rws.file.size
-		rws.file.mu.Unlock()
-		if rws.offset < size {
-			row := rws.offset / blocksize
-			rowOffset := rws.offset - (row * blocksize)
-			rws.file.mu.Lock()
-			copied := 0
-			if rws.file.size < (row+1)*blocksize {
-				sizeOffset := rws.file.size - (row * blocksize)
-				copied = copy(p, rws.file.blocks[row][rowOffset:sizeOffset])
-			} else {
-				copied = copy(p, rws.file.blocks[row][rowOffset:])
-			}
-			rws.file.mu.Unlock()
-			n += copied
-			if n < len(p) {
-				p = p[copied:]
-			}
-			rws.offset += int64(copied)
-		} else {
-			err = io.EOF
+		block := rws.offset / blocksize
+		offset := rws.offset - (block * blocksize)
+		copied, err = rws.file.readBlock(block, offset, p)
+		n += copied
+		if n < len(p) {
+			p = p[copied:]
 		}
+		rws.offset += int64(copied)
 	}
 	return
 }
@@ -128,36 +136,14 @@ func (rws *readWriteSeeker) Write(p []byte) (n int, err error) {
 		return 0, ErrReadOnly
 	}
 
-	for {
-		size := rws.file.blockSize()
-		if rws.offset < size {
-			break
-		}
-		rws.file.mu.Lock()
-		rws.file.blocks = append(rws.file.blocks, make([]byte, blocksize))
-		rws.file.mu.Unlock()
-	}
-
-	rws.file.mu.Lock()
-	if rws.offset > rws.file.size {
-		rws.file.size = rws.offset
-	}
-	rws.file.mu.Unlock()
-
 	for len(p) > 0 && err == nil {
-		size := rws.file.blockSize()
-		rws.file.mu.Lock()
-		if rws.offset >= size {
-			rws.file.blocks = append(rws.file.blocks, make([]byte, blocksize))
+		copied := 0
+		block := rws.offset / blocksize
+		offset := int64(0)
+		if rws.offset < (block+1)*blocksize {
+			offset = rws.offset - (block * blocksize)
 		}
-		row := rws.offset / blocksize
-		rowOffset := int64(0)
-		if rws.offset < (row+1)*blocksize {
-			rowOffset = rws.offset - (row * blocksize)
-		}
-		copied := copy(rws.file.blocks[row][rowOffset:], p)
-		rws.file.size += int64(copied)
-		rws.file.mu.Unlock()
+		copied, err = rws.file.writeBlock(block, offset, p)
 		p = p[copied:]
 		rws.offset += int64(copied)
 		n += copied
@@ -198,7 +184,7 @@ type MemFs struct {
 }
 
 // NewMemFs will instantiate a new in-memory virtual filesystem
-func NewMemFs() FileSystem {
+func NewMemFs() *MemFs {
 	return &MemFs{files: make(map[string]*memFile)}
 }
 
