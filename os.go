@@ -24,8 +24,15 @@ type osFs struct {
 	root string
 }
 
+// NewOsFs will return a new FileSystem that is backed by the operating
+// system functions in the 'os' package.  The OsFs filesystem will be
+// rooted in the given path
 func NewOsFs(root string) FileSystem {
 	return &osFs{filepath.Clean(root)}
+}
+
+func (osfs *osFs) Create(filename string) (io.ReadWriteSeeker, error) {
+	return os.Create(filename)
 }
 
 func (osfs *osFs) Chmod(filename string, mode os.FileMode) error {

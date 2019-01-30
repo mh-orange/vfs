@@ -15,21 +15,11 @@
 package vfs
 
 import (
-	"errors"
 	"io"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
-)
-
-var (
-	ErrInvalidSeek = errors.New("seek before beginning of file")
-	ErrReadOnly    = errors.New("file is open read only")
-	ErrWriteOnly   = errors.New("file is open write only")
-	ErrWhence      = errors.New("invalid value for whence")
-	ErrExist       = errors.New("file already exists")
-	ErrNotExist    = errors.New("file does not exist")
 )
 
 const blocksize = 1024
@@ -182,30 +172,115 @@ type fileStat struct {
 	modTime time.Time
 }
 
-func (fs *fileStat) Name() string       { return fs.name }
-func (fs *fileStat) Size() int64        { return fs.size }
-func (fs *fileStat) Mode() os.FileMode  { return fs.mode }
-func (fs *fileStat) ModTime() time.Time { return fs.modTime }
-func (fs *fileStat) IsDir() bool        { return false }
-func (fs *fileStat) Sys() interface{}   { return nil }
+// Name returns the base name of the file
+func (fs *fileStat) Name() string { return fs.name }
 
+// Size returns length of the file in bytes
+func (fs *fileStat) Size() int64 { return fs.size }
+
+// Mode is the file mode bits
+func (fs *fileStat) Mode() os.FileMode { return fs.mode }
+
+// ModTime is the modification time of the file
+func (fs *fileStat) ModTime() time.Time { return fs.modTime }
+
+// IsDir is an abbreviation for Mode().IsDir()
+func (fs *fileStat) IsDir() bool { return fs.Mode().IsDir() }
+
+// Sys returns the underlying data source.  For MemFs this is nil
+func (fs *fileStat) Sys() interface{} { return nil }
+
+// MemFs is a completely in-memory filesystem.  This filesystem is good for
+// use in unit tests and that is its primary motivation
 type MemFs struct {
 	files map[string]*memFile
 	mu    sync.Mutex
 }
 
+// NewMemFs will instantiate a new in-memory virtual filesystem
 func NewMemFs() FileSystem {
 	return &MemFs{files: make(map[string]*memFile)}
 }
 
+// Chmod changes the mode of the named file to mode.
+func (memfs *MemFs) Chmod(filename string, mode os.FileMode) (err error) {
+	memfs.mu.Lock()
+	defer memfs.mu.Unlock()
+
+	if file, found := memfs.files[filename]; found {
+		file.mode = mode
+	} else {
+		err = ErrNotExist
+	}
+	return err
+}
+
+// Create creates the named file with mode 0666 (before umask), truncating it if it already exists.  If
+// successful, an io.ReadWriteSeeker is returned
+func (memfs *MemFs) Create(filename string) (io.ReadWriteSeeker, error) {
+	return memfs.OpenFile(filename, RdWrFlag|CreateFlag|TruncFlag, 0666)
+}
+
+// Open opens the named file for reading.  If successful, an io.ReadSeeker is returned
+func (memfs *MemFs) Open(filename string) (io.ReadSeeker, error) {
+	return memfs.OpenFile(filename, RdOnlyFlag, 0)
+}
+
+// OpenFile is the generalized open call; most users will use Open or Create instead.
+// It opens the named file with specified flag (O_RDONLY etc.) and perm (before umask),
+// if applicable. If successful, an io.ReadWriteSeeker is returned.  If the OpenFlag was
+// set to O_RDONLY then the io.ReadWriteSeeker itself may not be writable.  This is
+// dependent on the implementation
+func (memfs *MemFs) OpenFile(filename string, flag OpenFlag, perm os.FileMode) (io.ReadWriteSeeker, error) {
+	memfs.mu.Lock()
+	defer memfs.mu.Unlock()
+
+	var rws *readWriteSeeker
+	err := flag.check()
+	if err == nil {
+		file, found := memfs.files[filename]
+		if found {
+			if flag.has(CreateFlag) && flag.has(ExclFlag) {
+				err = ErrExist
+			}
+		} else {
+			if flag.has(CreateFlag) && (flag.has(RdWrFlag) || flag.has(WrOnlyFlag)) {
+				file = &memFile{mode: perm}
+				file.touch()
+				memfs.files[filename] = file
+			} else {
+				err = ErrNotExist
+			}
+		}
+
+		if err == nil {
+			rws = &readWriteSeeker{file: file}
+			if flag.has(RdOnlyFlag) {
+				rws.readOnly = true
+			} else if flag.has(WrOnlyFlag) {
+				rws.writeOnly = true
+			}
+
+			if flag.has(TruncFlag) {
+				file.mu.Lock()
+				file.blocks = nil
+				file.mu.Unlock()
+			}
+
+			if flag.has(AppendFlag) {
+				_, err = rws.Seek(0, io.SeekEnd)
+			}
+		}
+	}
+	return rws, err
+}
+
+// ReadFile reads the file named by filename and returns the contents.
 func (memfs *MemFs) ReadFile(filename string) (data []byte, err error) {
 	return readFile(memfs, filename)
 }
 
-func (memfs *MemFs) WriteFile(filename string, content []byte, perm os.FileMode) error {
-	return writeFile(memfs, filename, content, perm)
-}
-
+// Stat returns the FileInfo structure describing file.
 func (memfs *MemFs) Stat(filename string) (os.FileInfo, error) {
 	if file, found := memfs.files[filename]; found {
 		file.mu.Lock()
@@ -221,62 +296,8 @@ func (memfs *MemFs) Stat(filename string) (os.FileInfo, error) {
 	return nil, ErrNotExist
 }
 
-func (memfs *MemFs) Open(filename string) (io.ReadSeeker, error) {
-	return memfs.OpenFile(filename, O_RDONLY, 0000)
-}
-
-func (memfs *MemFs) OpenFile(filename string, flag OpenFlag, perm os.FileMode) (io.ReadWriteSeeker, error) {
-	memfs.mu.Lock()
-	defer memfs.mu.Unlock()
-
-	var rws *readWriteSeeker
-	err := flag.check()
-	if err == nil {
-		file, found := memfs.files[filename]
-		if found {
-			if flag.has(O_CREATE) && flag.has(O_EXCL) {
-				err = ErrExist
-			}
-		} else {
-			if flag.has(O_CREATE) && (flag.has(O_RDWR) || flag.has(O_WRONLY)) {
-				file = &memFile{mode: perm}
-				file.touch()
-				memfs.files[filename] = file
-			} else {
-				err = ErrNotExist
-			}
-		}
-
-		if err == nil {
-			rws = &readWriteSeeker{file: file}
-			if flag.has(O_RDONLY) {
-				rws.readOnly = true
-			} else if flag.has(O_WRONLY) {
-				rws.writeOnly = true
-			}
-
-			if flag.has(O_TRUNC) {
-				file.mu.Lock()
-				file.blocks = nil
-				file.mu.Unlock()
-			}
-
-			if flag.has(O_APPEND) {
-				_, err = rws.Seek(0, io.SeekEnd)
-			}
-		}
-	}
-	return rws, err
-}
-
-func (memfs *MemFs) Chmod(filename string, mode os.FileMode) (err error) {
-	memfs.mu.Lock()
-	defer memfs.mu.Unlock()
-
-	if file, found := memfs.files[filename]; found {
-		file.mode = mode
-	} else {
-		err = ErrNotExist
-	}
-	return err
+// WriteFile writes data to a file named by filename. If the file does not exist, WriteFile
+// creates it with permissions perm; otherwise WriteFile truncates it before writing.
+func (memfs *MemFs) WriteFile(filename string, content []byte, perm os.FileMode) error {
+	return writeFile(memfs, filename, content, perm)
 }

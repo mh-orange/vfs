@@ -94,7 +94,7 @@ func TestMemFs(t *testing.T) {
 	})
 
 	t.Run("append file", func(t *testing.T) {
-		rws, err := fs.OpenFile(filename, O_WRONLY|O_APPEND, 0)
+		rws, err := fs.OpenFile(filename, WrOnlyFlag|AppendFlag, 0)
 		if err == nil {
 			app := make([]byte, 42)
 			n, err := rand.Read(app)
