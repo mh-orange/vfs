@@ -48,6 +48,20 @@ var (
 	ErrNotExist = errors.New("file does not exist")
 )
 
+// IsExist returns a boolean indicating whether the error is known to report
+// that a file or directory already exists. It is satisfied by ErrExist as
+// well as some syscall errors.
+func IsExist(err error) bool {
+	return err == ErrExist
+}
+
+// IsNotExist returns a boolean indicating whether the error is known to
+// report that a file or directory does not exist. It is satisfied by
+// ErrNotExist as well as some syscall errors.
+func IsNotExist(err error) bool {
+	return err == ErrNotExist
+}
+
 // OpenFlag is passed to Open functions to indicate any actions taken
 // while opening a file
 type OpenFlag int
