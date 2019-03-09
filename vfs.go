@@ -16,9 +16,12 @@ package vfs
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"io/ioutil"
 	"os"
+	"path/filepath"
+	"sort"
 )
 
 var (
@@ -46,20 +49,65 @@ var (
 
 	// ErrNotExist indicates a file was not found
 	ErrNotExist = errors.New("file does not exist")
+
+	// ErrNotDir indicates a file is not a directory when a directory operation was
+	// called (such as Readdirnames)
+	ErrNotDir = errors.New("The path specified is not a directory")
+
+	// ErrIsDir indicates a file is a directory, not a regular file.  This is returned
+	// by directories when file I/O operations (read, write, seek) are called
+	ErrIsDir = errors.New("The path specified is a directory")
 )
 
 // IsExist returns a boolean indicating whether the error is known to report
 // that a file or directory already exists. It is satisfied by ErrExist as
 // well as some syscall errors.
 func IsExist(err error) bool {
-	return err == ErrExist
+	// accomodate OsFs
+	return err == ErrExist || os.IsExist(err)
 }
 
 // IsNotExist returns a boolean indicating whether the error is known to
 // report that a file or directory does not exist. It is satisfied by
 // ErrNotExist as well as some syscall errors.
 func IsNotExist(err error) bool {
-	return err == ErrNotExist
+	// accomodate OsFs
+	return err == ErrNotExist || os.IsNotExist(err)
+}
+
+// PathError represents an error that occured while performing an operation
+// on a given path
+type PathError struct {
+	// Op is the name of the operation where the error occurred
+	Op string
+
+	// Path is the string path that caused the error
+	Path string
+
+	// Cause is the underlying error that occurred (ErrNotDir, ErrIsDir, etc)
+	Cause error
+}
+
+// Error returns information about the operation and path where an error occurred
+func (pe *PathError) Error() string {
+	return fmt.Sprintf("%s %s: %v", pe.Op, pe.Path, pe.Cause)
+}
+
+func (pe *PathError) cause() error {
+	err := pe.Cause
+	if pe, ok := err.(*PathError); ok {
+		err = pe.cause()
+	}
+	return err
+}
+
+// IsError will determine if `check` is wrapping an underlying error.
+// If so, the underlying error is compared to `err`.
+func IsError(err, is error) bool {
+	if pe, ok := err.(*PathError); ok {
+		err = pe.cause()
+	}
+	return err == is
 }
 
 // OpenFlag is passed to Open functions to indicate any actions taken
@@ -120,6 +168,24 @@ func (of OpenFlag) check() (err error) {
 	return
 }
 
+type File interface {
+	io.ReadWriteSeeker
+
+	// Readdirnames reads and returns a slice of names from the directory f.
+	//
+	// If n > 0, Readdirnames returns at most n names. In this case, if
+	// Readdirnames returns an empty slice, it will return a non-nil error
+	// explaining why. At the end of a directory, the error is io.EOF.
+	//
+	// If n <= 0, Readdirnames returns all the names from the directory in
+	// a single slice. In this case, if Readdirnames succeeds (reads all
+	// the way to the end of the directory), it returns the slice and a
+	// nil error. If it encounters an error before the end of the
+	// directory, Readdirnames returns the names read until that point and
+	// a non-nil error.
+	Readdirnames(n int) (names []string, err error)
+}
+
 // FileSystem is the primary interface that must be satisfied.  A FileSystem abstracts away
 // the basic operations of interacting with files including reading and writing files
 type FileSystem interface {
@@ -128,33 +194,40 @@ type FileSystem interface {
 
 	// Create creates the named file with mode 0666 (before umask), truncating it if it already exists.  If
 	// successful, an io.ReadWriteSeeker is returned
-	Create(name string) (io.ReadWriteSeeker, error)
+	Create(name string) (File, error)
 
 	// Open opens the named file for reading.  If successful, an io.ReadSeeker is returned
-	Open(filename string) (io.ReadSeeker, error)
+	Open(filename string) (File, error)
 
 	// OpenFile is the generalized open call; most users will use Open or Create instead.
 	// It opens the named file with specified flag (O_RDONLY etc.) and perm (before umask),
 	// if applicable. If successful, an io.ReadWriteSeeker is returned.  If the OpenFlag was
 	// set to O_RDONLY then the io.ReadWriteSeeker itself may not be writable.  This is
 	// dependent on the implementation
-	OpenFile(filename string, flag OpenFlag, perm os.FileMode) (io.ReadWriteSeeker, error)
+	OpenFile(filename string, flag OpenFlag, perm os.FileMode) (File, error)
 
-	// ReadFile reads the file named by filename and returns the contents.
-	ReadFile(filename string) ([]byte, error)
+	// Mkdir creates a new directory with the specified name and permission bits
+	// (before umask). If there is an error, it will be of type *PathError.
+	Mkdir(name string, perm os.FileMode) error
+
+	// Remove removes the named file or (empty) directory. If there is an error,
+	// it will be of type *PathError.
+	Remove(name string) error
+
+	// Lstat returns a FileInfo describing the named file. If the file is a
+	// symbolic link, the returned FileInfo describes the symbolic link.
+	// Lstat makes no attempt to follow the link. If there is an error, it
+	// will be of type *PathError.
+	Lstat(name string) (os.FileInfo, error)
 
 	// Stat returns the FileInfo structure describing file.
 	Stat(filename string) (os.FileInfo, error)
-
-	// WriteFile writes data to a file named by filename. If the file does not exist, WriteFile
-	// creates it with permissions perm; otherwise WriteFile truncates it before writing.
-	WriteFile(filename string, content []byte, mode os.FileMode) error
 }
 
-// readFile reads the file named by filename, from the given filesystem, and returns the content
+// ReadFile reads the file named by filename, from the given filesystem, and returns the content
 // A successful call returns err == nil, not err == EOF. Because ReadFile reads the whole file,
 // it does not treat an EOF from Read as an error to be reported.
-func readFile(fs FileSystem, filename string) (data []byte, err error) {
+func ReadFile(fs FileSystem, filename string) (data []byte, err error) {
 	reader, err := fs.Open(filename)
 	if err == nil {
 		// ioutil.ReadAll satisfies the need to prevent returning io.EOF
@@ -169,9 +242,9 @@ func readFile(fs FileSystem, filename string) (data []byte, err error) {
 	return data, err
 }
 
-// writeFile writes data to a file named by filename. If the file does not exist, WriteFile
+// WriteFile writes data to a file named by filename. If the file does not exist, WriteFile
 // creates it with permissions perm; otherwise WriteFile truncates it before writing.
-func writeFile(fs FileSystem, filename string, content []byte, perm os.FileMode) error {
+func WriteFile(fs FileSystem, filename string, content []byte, perm os.FileMode) error {
 	writer, err := fs.OpenFile(filename, WrOnlyFlag|CreateFlag|TruncFlag, perm)
 	if err == nil {
 		var n int
@@ -185,6 +258,82 @@ func writeFile(fs FileSystem, filename string, content []byte, perm os.FileMode)
 				err = err1
 			}
 		}
+	}
+	return err
+}
+
+// readDirNames reads the directory named by dirname and returns
+// a sorted list of directory entries.
+func readDirNames(fs FileSystem, dirname string) ([]string, error) {
+	f, err := fs.Open(dirname)
+	if err != nil {
+		return nil, err
+	}
+	names, err := f.Readdirnames(-1)
+
+	if closer, ok := f.(io.Closer); ok {
+		closer.Close()
+	}
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
+// walk recursively descends path, calling walkFn.
+func walk(fs FileSystem, path string, info os.FileInfo, walkFn filepath.WalkFunc) error {
+	if !info.IsDir() {
+		return walkFn(path, info, nil)
+	}
+
+	names, err := readDirNames(fs, path)
+	err1 := walkFn(path, info, err)
+	// If err != nil, walk can't walk into this directory.
+	// err1 != nil means walkFn want walk to skip this directory or stop walking.
+	// Therefore, if one of err and err1 isn't nil, walk will return.
+	if err != nil || err1 != nil {
+		// The caller's behavior is controlled by the return value, which is decided
+		// by walkFn. walkFn may ignore err and return nil.
+		// If walkFn returns SkipDir, it will be handled by the caller.
+		// So walk should return whatever walkFn returns.
+		return err1
+	}
+
+	for _, name := range names {
+		filename := filepath.Join(path, name)
+		fileInfo, err := fs.Lstat(filename)
+		if err != nil {
+			if err := walkFn(filename, fileInfo, err); err != nil && err != filepath.SkipDir {
+				return err
+			}
+		} else {
+			err = walk(fs, filename, fileInfo, walkFn)
+			if err != nil {
+				if !fileInfo.IsDir() || err != filepath.SkipDir {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// Walk walks the file tree rooted at root, calling walkFn for each file or
+// directory in the tree, including root. All errors that arise visiting files
+// and directories are filtered by walkFn. The files are walked in lexical
+// order, which makes the output deterministic but means that for very
+// large directories Walk can be inefficient.
+// Walk does not follow symbolic links.
+func Walk(fs FileSystem, root string, walkFn filepath.WalkFunc) error {
+	info, err := fs.Lstat(root)
+	if err != nil {
+		err = walkFn(root, nil, err)
+	} else {
+		err = walk(fs, root, info, walkFn)
+	}
+	if err == filepath.SkipDir {
+		return nil
 	}
 	return err
 }

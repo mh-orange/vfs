@@ -15,7 +15,6 @@
 package vfs
 
 import (
-	"io"
 	"os"
 	"path/filepath"
 )
@@ -28,7 +27,7 @@ type OsFs struct {
 // NewOsFs will return a new FileSystem that is backed by the operating
 // system functions in the 'os' package.  The OsFs filesystem will be
 // rooted in the given path
-func NewOsFs(root string) *OsFs {
+func NewOsFs(root string) FileSystem {
 	return &OsFs{filepath.Clean(root)}
 }
 
@@ -39,12 +38,12 @@ func (osfs *OsFs) Chmod(filename string, mode os.FileMode) error {
 
 // Create creates the named file with mode 0666 (before umask), truncating it if it already exists.  If
 // successful, an io.ReadWriteSeeker is returned
-func (osfs *OsFs) Create(filename string) (io.ReadWriteSeeker, error) {
+func (osfs *OsFs) Create(filename string) (File, error) {
 	return os.Create(filename)
 }
 
 // Open opens the named file for reading.  If successful, an io.ReadSeeker is returned
-func (osfs *OsFs) Open(filename string) (io.ReadSeeker, error) {
+func (osfs *OsFs) Open(filename string) (File, error) {
 	return os.Open(osfs.path(filename))
 }
 
@@ -53,7 +52,7 @@ func (osfs *OsFs) Open(filename string) (io.ReadSeeker, error) {
 // if applicable. If successful, an io.ReadWriteSeeker is returned.  If the OpenFlag was
 // set to O_RDONLY then the io.ReadWriteSeeker itself may not be writable.  This is
 // dependent on the implementation
-func (osfs *OsFs) OpenFile(filename string, flag OpenFlag, perm os.FileMode) (io.ReadWriteSeeker, error) {
+func (osfs *OsFs) OpenFile(filename string, flag OpenFlag, perm os.FileMode) (File, error) {
 	return os.OpenFile(osfs.path(filename), int(flag), perm)
 }
 
@@ -68,18 +67,27 @@ func (osfs *OsFs) path(filename string) string {
 	return filepath.Join(osfs.root, filepath.Clean(filename))
 }
 
-// ReadFile reads the file named by filename and returns the contents.
-func (osfs *OsFs) ReadFile(filename string) (content []byte, err error) {
-	return readFile(osfs, filename)
+// Mkdir creates a new directory with the specified name and permission bits
+// (before umask). If there is an error, it will be of type *PathError.
+func (osfs *OsFs) Mkdir(name string, perm os.FileMode) error {
+	return os.Mkdir(osfs.path(name), perm)
+}
+
+// Remove removes the named file or (empty) directory. If there is an error,
+// it will be of type *PathError.
+func (osfs *OsFs) Remove(name string) error {
+	return os.Remove(osfs.path(name))
+}
+
+// Lstat returns a FileInfo describing the named file. If the file is a
+// symbolic link, the returned FileInfo describes the symbolic link.
+// Lstat makes no attempt to follow the link. If there is an error, it
+// will be of type *PathError.
+func (osfs *OsFs) Lstat(filename string) (os.FileInfo, error) {
+	return os.Lstat(osfs.path(filename))
 }
 
 // Stat returns the FileInfo structure describing file.
 func (osfs *OsFs) Stat(filename string) (os.FileInfo, error) {
 	return os.Stat(osfs.path(filename))
-}
-
-// WriteFile writes data to a file named by filename. If the file does not exist, WriteFile
-// creates it with permissions perm; otherwise WriteFile truncates it before writing.
-func (osfs *OsFs) WriteFile(filename string, content []byte, perm os.FileMode) error {
-	return writeFile(osfs, filename, content, perm)
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -28,7 +29,7 @@ func TestReadWriteSeekerSeek(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		rws := &readWriteSeeker{file: &memFile{size: test.size}, offset: test.current}
+		rws := &memFile{inode: &memInode{size: test.size}, offset: test.current}
 		n, err := rws.Seek(test.offset, test.whence)
 		if err == test.wantErr {
 			if err == nil {
@@ -42,7 +43,36 @@ func TestReadWriteSeekerSeek(t *testing.T) {
 	}
 }
 
-func testMemFsNotExist(fs *MemFs, filename string) func(t *testing.T) {
+func testMemfsMkdir(fs *memfs, dirname string) func(t *testing.T) {
+	return func(t *testing.T) {
+		_, err := fs.Stat(dirname)
+		if err != ErrNotExist {
+			t.Errorf("Expected ErrNotExist got %v", err)
+		}
+
+		err = fs.Mkdir(dirname, 0755)
+		if err != nil {
+			t.Errorf("Expected no error, got %v", err)
+		}
+
+		fi, err := fs.Stat(dirname)
+		if err == nil {
+			if fi.IsDir() == false {
+				t.Errorf("Expected IsDir to return true")
+			}
+
+			want := os.FileMode(0755)
+			got := fi.Mode() & os.ModePerm
+			if got != want {
+				t.Errorf("Want %v got %v", want, got)
+			}
+		} else {
+			t.Errorf("Expected no error got %v", err)
+		}
+	}
+}
+
+func testmemfsNotExist(fs *memfs, filename string) func(t *testing.T) {
 	return func(t *testing.T) {
 		_, err := fs.Stat(filename)
 		if err != ErrNotExist {
@@ -61,25 +91,25 @@ func testMemFsNotExist(fs *MemFs, filename string) func(t *testing.T) {
 	}
 }
 
-func testMemFsWriteFile(fs *MemFs, filename string, content []byte, perm os.FileMode) func(t *testing.T) {
+func testMemFsWriteFile(fs *memfs, filename string, content []byte, perm os.FileMode) func(t *testing.T) {
 	return func(t *testing.T) {
-		err := fs.WriteFile(filename, content, perm)
+		err := WriteFile(fs, filename, content, perm)
 		if err != nil {
 			t.Errorf("Unexpected error: %v", err)
 		}
 	}
 }
 
-func testMemFsCreateFile(fs *MemFs, filename string) func(t *testing.T) {
+func testmemfsCreateFile(fs *memfs, filename string) func(t *testing.T) {
 	return func(t *testing.T) {
 		fs.Create(filename)
-		if _, found := fs.files[filename]; !found {
-			t.Errorf("Create file failed")
+		if _, err := fs.find(filename); err != nil {
+			t.Errorf("Create file failed: %v", err)
 		}
 	}
 }
 
-func testMemFsStatFile(fs *MemFs, filename string, wantSize int64, wantPerm os.FileMode, wantErr error) func(t *testing.T) {
+func testmemfsStatFile(fs *memfs, filename string, wantSize int64, wantPerm os.FileMode, wantErr error) func(t *testing.T) {
 	return func(t *testing.T) {
 		got, err := fs.Stat(filename)
 		if err == nil {
@@ -113,9 +143,9 @@ func testMemFsStatFile(fs *MemFs, filename string, wantSize int64, wantPerm os.F
 	}
 }
 
-func testMemFsReadFile(fs *MemFs, filename string, want []byte) func(t *testing.T) {
+func testMemFsReadFile(fs *memfs, filename string, want []byte) func(t *testing.T) {
 	return func(t *testing.T) {
-		got, err := fs.ReadFile(filename)
+		got, err := ReadFile(fs, filename)
 		if err == nil {
 			if !bytes.Equal(want, got) {
 				t.Errorf("Didn't read expected data")
@@ -127,7 +157,7 @@ func testMemFsReadFile(fs *MemFs, filename string, want []byte) func(t *testing.
 	}
 }
 
-func testMemFsAppendFile(fs *MemFs, filename string, want []byte) func(t *testing.T) {
+func testmemfsAppendFile(fs *memfs, filename string, want []byte) func(t *testing.T) {
 	return func(t *testing.T) {
 		rws, err := fs.OpenFile(filename, WrOnlyFlag|AppendFlag, 0)
 		if err == nil {
@@ -139,7 +169,7 @@ func testMemFsAppendFile(fs *MemFs, filename string, want []byte) func(t *testin
 			want = append(want, data...)
 			rws.Write(data)
 
-			got, _ := fs.ReadFile(filename)
+			got, _ := ReadFile(fs, filename)
 			if !bytes.Equal(want, got) {
 				t.Errorf("Files do not match after append")
 			}
@@ -149,7 +179,7 @@ func testMemFsAppendFile(fs *MemFs, filename string, want []byte) func(t *testin
 	}
 }
 
-func testMemFsChmodFile(fs *MemFs, filename string, want os.FileMode) func(t *testing.T) {
+func testmemfsChmodFile(fs *memfs, filename string, want os.FileMode) func(t *testing.T) {
 	return func(t *testing.T) {
 		err := fs.Chmod(filename, want)
 		if err == nil {
@@ -166,13 +196,13 @@ func testMemFsChmodFile(fs *MemFs, filename string, want os.FileMode) func(t *te
 	}
 }
 
-func TestMemFs(t *testing.T) {
-	fs := NewMemFs()
+func TestMemfs(t *testing.T) {
+	fs := NewMemFs().(*memfs)
 	startPerm := os.FileMode(0644)
 	endPerm := os.FileMode(0755)
 
-	writeFile := "write_file_test.txt"
-	createFile := "create_file_test.txt"
+	writeFile := "/tmp/write_file_test.txt"
+	createFile := "/tmp/foo/create_file_test.txt"
 	size := int64(blocksize*3 - 42)
 	want := make([]byte, size)
 	n, err := rand.Read(want)
@@ -180,11 +210,13 @@ func TestMemFs(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
-	t.Run("stat file", testMemFsNotExist(fs, writeFile))
+	t.Run(fmt.Sprintf("mkdir %q", filepath.Dir(writeFile)), testMemfsMkdir(fs, filepath.Dir(writeFile)))
+	t.Run(fmt.Sprintf("mkdir %q", filepath.Dir(createFile)), testMemfsMkdir(fs, filepath.Dir(createFile)))
+	t.Run("stat file", testmemfsNotExist(fs, writeFile))
 	t.Run("write file", testMemFsWriteFile(fs, writeFile, want, startPerm))
-	t.Run("create file", testMemFsCreateFile(fs, createFile))
-	t.Run("stat file", testMemFsStatFile(fs, writeFile, size, startPerm, nil))
+	t.Run("create file", testmemfsCreateFile(fs, createFile))
+	t.Run("stat file", testmemfsStatFile(fs, writeFile, size, startPerm, nil))
 	t.Run("read file", testMemFsReadFile(fs, writeFile, want))
-	t.Run("append file", testMemFsAppendFile(fs, writeFile, want))
-	t.Run("chmod file", testMemFsChmodFile(fs, writeFile, endPerm))
+	t.Run("append file", testmemfsAppendFile(fs, writeFile, want))
+	t.Run("chmod file", testmemfsChmodFile(fs, writeFile, endPerm))
 }

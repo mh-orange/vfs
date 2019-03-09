@@ -5,25 +5,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"testing"
 )
-
-func TestConstructors(t *testing.T) {
-	tests := []struct {
-		obj interface{}
-	}{
-		{NewOsFs("/")},
-		{NewMemFs()},
-	}
-
-	for _, test := range tests {
-		t.Run(fmt.Sprintf("%T", test.obj), func(t *testing.T) {
-			if _, ok := test.obj.(FileSystem); !ok {
-				t.Errorf("does not implement FileSystem")
-			}
-		})
-	}
-}
 
 func TestOpenFlagCheck(t *testing.T) {
 	tests := []struct {
@@ -83,28 +67,28 @@ func (tf *testFs) Close() error {
 }
 
 type testFs struct {
-	closed bool
-	got    []byte
-	want   []byte
+	closed   bool
+	got      []byte
+	want     []byte
+	dirnames []string
 }
 
 func (tf *testFs) Chmod(filename string, perm os.FileMode) error { return nil }
-func (tf *testFs) Create(filename string) (io.ReadWriteSeeker, error) {
+func (tf *testFs) Create(filename string) (File, error) {
 	return tf.OpenFile(filename, 0, 0)
 }
-func (tf *testFs) Open(filename string) (io.ReadSeeker, error) { return tf.OpenFile(filename, 0, 0) }
 
-func (tf *testFs) OpenFile(filename string, flags OpenFlag, perm os.FileMode) (io.ReadWriteSeeker, error) {
+func (tf *testFs) Open(filename string) (File, error) { return tf.OpenFile(filename, 0, 0) }
+
+func (tf *testFs) OpenFile(filename string, flags OpenFlag, perm os.FileMode) (File, error) {
 	return tf, nil
 }
 
-func (tf *testFs) ReadFile(filename string) ([]byte, error)  { return tf.want, nil }
-func (tf *testFs) Stat(filename string) (os.FileInfo, error) { return nil, nil }
-func (tf *testFs) WriteFile(filename string, content []byte, perm os.FileMode) error {
-	tf.got = make([]byte, len(content))
-	copy(tf.got, content)
-	return nil
-}
+func (tf *testFs) Readdirnames(n int) ([]string, error)       { return tf.dirnames, nil }
+func (tf *testFs) Remove(name string) error                   { return nil }
+func (tf *testFs) Mkdir(name string, perm os.FileMode) error  { return nil }
+func (tf *testFs) Lstat(filename string) (os.FileInfo, error) { return nil, nil }
+func (tf *testFs) Stat(filename string) (os.FileInfo, error)  { return nil, nil }
 
 func TestWriteFile(t *testing.T) {
 	tests := []struct {
@@ -118,7 +102,7 @@ func TestWriteFile(t *testing.T) {
 
 	for _, test := range tests {
 		fs := &testFs{got: test.got}
-		err := writeFile(fs, "test file", test.want, 0)
+		err := WriteFile(fs, "test file", test.want, 0)
 		if err == test.wantErr {
 			if err == nil {
 				if !fs.closed {
@@ -145,7 +129,7 @@ func TestReadFile(t *testing.T) {
 
 	for _, test := range tests {
 		fs := &testFs{want: test.want}
-		got, err := readFile(fs, "test file")
+		got, err := ReadFile(fs, "test file")
 		if err == test.wantErr {
 			if err == nil {
 				if !fs.closed {
@@ -159,4 +143,136 @@ func TestReadFile(t *testing.T) {
 		} else if err != nil {
 		}
 	}
+}
+
+/*
+func testMemFsWriteFile(fs *MemFs, filename string, content []byte, perm os.FileMode) func(t *testing.T) {
+	return func(t *testing.T) {
+		err := fs.WriteFile(filename, content, perm)
+		if err != nil {
+			t.Errorf("Unexpected error: %v", err)
+		}
+	}
+}
+
+
+func testMemFsReadFile(fs *MemFs, filename string, want []byte) func(t *testing.T) {
+	return func(t *testing.T) {
+		got, err := fs.ReadFile(filename)
+		if err == nil {
+			if !bytes.Equal(want, got) {
+				t.Errorf("Didn't read expected data")
+				t.Logf("Wanted:\n%s\nGot:\n%s\n", hex.Dump(want), hex.Dump(got))
+			}
+		} else {
+			t.Errorf("Unexpected error: %v", err)
+		}
+	}
+}
+*/
+
+type Node struct {
+	name    string
+	entries []*Node // nil if the entry is a file
+	mark    int
+}
+
+var tree = &Node{
+	"testdata",
+	[]*Node{
+		{"a", nil, 0},
+		{"b", []*Node{}, 0},
+		{"c", nil, 0},
+		{
+			"d",
+			[]*Node{
+				{"x", nil, 0},
+				{"y", []*Node{}, 0},
+				{
+					"z",
+					[]*Node{
+						{"u", nil, 0},
+						{"v", nil, 0},
+					},
+					0,
+				},
+			},
+			0,
+		},
+	},
+	0,
+}
+
+func walkTree(n *Node, path string, f func(path string, n *Node)) {
+	f(path, n)
+	for _, e := range n.entries {
+		walkTree(e, filepath.Join(path, e.name), f)
+	}
+}
+
+func makeTree(t *testing.T, fs FileSystem) {
+	walkTree(tree, tree.name, func(path string, n *Node) {
+		if n.entries == nil {
+			fd, err := fs.Create(path)
+			if err != nil {
+				t.Errorf("makeTree: %v", err)
+				return
+			}
+
+			if closer, ok := fd.(io.Closer); ok {
+				closer.Close()
+			}
+		} else {
+			err := fs.Mkdir(path, 0770)
+			if err != nil {
+				t.Errorf("makeTree: %v", err)
+			}
+		}
+	})
+}
+
+func mark(info os.FileInfo, err error, errors *[]error, clear bool) error {
+	name := info.Name()
+	walkTree(tree, tree.name, func(path string, n *Node) {
+		if n.name == name {
+			n.mark++
+		}
+	})
+	if err != nil {
+		*errors = append(*errors, err)
+		if clear {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+func checkMarks(t *testing.T, report bool) {
+	walkTree(tree, tree.name, func(path string, n *Node) {
+		if n.mark != 1 && report {
+			t.Errorf("node %s mark = %d; expected 1", path, n.mark)
+		}
+		n.mark = 0
+	})
+}
+
+func TestWalk(t *testing.T) {
+	fs := NewMemFs()
+	makeTree(t, fs)
+	errors := make([]error, 0, 10)
+	clear := true
+	markFn := func(path string, info os.FileInfo, err error) error {
+		return mark(info, err, &errors, clear)
+	}
+	// Expect no errors.
+	err := Walk(fs, tree.name, markFn)
+	if err != nil {
+		t.Fatalf("no error expected, found: %s", err)
+	}
+	if len(errors) != 0 {
+		t.Fatalf("unexpected errors: %s", errors)
+	}
+	checkMarks(t, true)
+	errors = errors[0:0]
 }

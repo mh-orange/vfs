@@ -44,7 +44,7 @@ func TestOsFs(t *testing.T) {
 	filename := "file_test.txt"
 	want := []byte("Hello, playground\n")
 	t.Run("write file", func(t *testing.T) {
-		err := fs.WriteFile(filename, want, startPerm)
+		err := WriteFile(fs, filename, want, startPerm)
 		if err == nil {
 			var got []byte
 			got, err = ioutil.ReadFile(filepath.Join(tmpdir, filename))
@@ -61,7 +61,7 @@ func TestOsFs(t *testing.T) {
 	})
 
 	t.Run("read file", func(t *testing.T) {
-		got, err := fs.ReadFile(filename)
+		got, err := ReadFile(fs, filename)
 		if err == nil {
 			if !bytes.Equal(want, got) {
 				t.Errorf("Wanted %q got %q", string(want), string(got))
