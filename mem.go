@@ -461,6 +461,13 @@ func (fs *memfs) Mkdir(name string, perm os.FileMode) error {
 	if !strings.HasPrefix(name, "/") {
 		name = fmt.Sprintf("/%s", name)
 	}
+
+	// check for existing file
+	_, err := fs.find(name)
+	if err == nil {
+		return ErrExist
+	}
+
 	inode, err := fs.find(filepath.Dir(name))
 	if err == nil {
 		if inode.Mode().IsDir() {
