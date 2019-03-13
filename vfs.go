@@ -64,7 +64,7 @@ var (
 // well as some syscall errors.
 func IsExist(err error) bool {
 	// accomodate OsFs
-	return err == ErrExist || os.IsExist(err)
+	return IsError(err, ErrExist) || os.IsExist(err)
 }
 
 // IsNotExist returns a boolean indicating whether the error is known to
@@ -72,7 +72,7 @@ func IsExist(err error) bool {
 // ErrNotExist as well as some syscall errors.
 func IsNotExist(err error) bool {
 	// accomodate OsFs
-	return err == ErrNotExist || os.IsNotExist(err)
+	return IsError(err, ErrNotExist) || os.IsNotExist(err)
 }
 
 // PathError represents an error that occured while performing an operation

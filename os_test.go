@@ -1,11 +1,6 @@
 package vfs
 
 import (
-	"bytes"
-	"io/ioutil"
-	"os"
-	"path/filepath"
-	"reflect"
 	"testing"
 )
 
@@ -30,7 +25,7 @@ func TestOsFsPath(t *testing.T) {
 	}
 }
 
-func TestOsFs(t *testing.T) {
+/*func TestOsFs(t *testing.T) {
 	tmpdir, err := ioutil.TempDir("", "osfs_test")
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
@@ -100,4 +95,4 @@ func TestOsFs(t *testing.T) {
 			t.Errorf("Unexpected error: %v", err)
 		}
 	})
-}
+}*/

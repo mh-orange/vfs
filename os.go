@@ -39,7 +39,7 @@ func (osfs *OsFs) Chmod(filename string, mode os.FileMode) error {
 // Create creates the named file with mode 0666 (before umask), truncating it if it already exists.  If
 // successful, an io.ReadWriteSeeker is returned
 func (osfs *OsFs) Create(filename string) (File, error) {
-	return os.Create(filename)
+	return os.Create(osfs.path(filename))
 }
 
 // Open opens the named file for reading.  If successful, an io.ReadSeeker is returned
