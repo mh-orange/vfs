@@ -6,9 +6,9 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -413,13 +413,7 @@ func testChmodFile(fs FileSystem, filename string, want os.FileMode) func(t *tes
 }
 
 func TestFs(t *testing.T) {
-	tmpdir, err := ioutil.TempDir("", "osfs_test")
-	if err != nil {
-		t.Fatalf("Failed to create temp directory: %v", err)
-	}
-	defer os.RemoveAll(tmpdir)
-
-	for _, fs := range []FileSystem{NewMemFs(), NewOsFs(tmpdir)} {
+	for _, fs := range []FileSystem{NewMemFs(), NewTempFs()} {
 		t.Run(fmt.Sprintf("%T", fs), func(t *testing.T) {
 			startPerm := os.FileMode(0644)
 			endPerm := os.FileMode(0755)
@@ -443,6 +437,49 @@ func TestFs(t *testing.T) {
 			t.Run("append file", testAppendFile(fs, writeFile, want))
 			t.Run("chmod file", testChmodFile(fs, writeFile, endPerm))
 			t.Run("walk", testWalk(fs, tree))
+			fs.Close()
 		})
 	}
+}
+
+func TestGlob(t *testing.T) {
+	fs := NewTempFs()
+	fs.Create("foo.bar")
+	fs.Create("fubar.go")
+	fs.Mkdir("/fun", 0750)
+	fs.Create("/fun/foo.bar")
+	tests := []struct {
+		pattern string
+		result  []string
+	}{
+		{"/foo.bar", []string{"/foo.bar"}},
+		{"/f?o.bar", []string{"/foo.bar"}},
+		{"/*", []string{"/foo.bar", "/fubar.go", "/fun"}},
+		{"/*/foo.bar", []string{"/fun/foo.bar"}},
+	}
+
+	for _, tt := range tests {
+		pattern := tt.pattern
+		result := tt.result
+		matches, err := Glob(fs, pattern)
+		if err != nil {
+			t.Errorf("Glob error for %q: %s", pattern, err)
+			continue
+		}
+		if !reflect.DeepEqual(result, matches) {
+			t.Errorf("Glob(%#q) = %#v want %v", pattern, matches, result)
+		}
+	}
+
+	for _, pattern := range []string{"no_match", "../*/no_match"} {
+		matches, err := Glob(fs, pattern)
+		if err != nil {
+			t.Errorf("Glob error for %q: %s", pattern, err)
+			continue
+		}
+		if len(matches) != 0 {
+			t.Errorf("Glob(%#q) = %#v want []", pattern, matches)
+		}
+	}
+	fs.Close()
 }

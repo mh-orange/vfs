@@ -22,6 +22,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 )
 
 var (
@@ -57,6 +58,9 @@ var (
 	// ErrIsDir indicates a file is a directory, not a regular file.  This is returned
 	// by directories when file I/O operations (read, write, seek) are called
 	ErrIsDir = errors.New("The path specified is a directory")
+
+	// ErrBadPattern indicates a pattern was malformed.
+	ErrBadPattern = errors.New("syntax error in pattern")
 )
 
 // IsExist returns a boolean indicating whether the error is known to report
@@ -222,6 +226,10 @@ type FileSystem interface {
 
 	// Stat returns the FileInfo structure describing file.
 	Stat(filename string) (os.FileInfo, error)
+
+	// Close will perform any implementation specific cleanup work and close the
+	// filesystem.  It is assumed that the filesystem is unusable after being closed
+	Close() error
 }
 
 // ReadFile reads the file named by filename, from the given filesystem, and returns the content
@@ -336,4 +344,120 @@ func Walk(fs FileSystem, root string, walkFn filepath.WalkFunc) error {
 		return nil
 	}
 	return err
+}
+
+// Glob returns the names of all files matching pattern or nil
+// if there is no matching file.
+// The pattern syntax is:
+//
+//	pattern:
+//		{ term }
+//	term:
+//		'*'         matches any sequence of non-Separator characters
+//		'?'         matches any single non-Separator character
+//		'[' [ '^' ] { character-range } ']'
+//		            character class (must be non-empty)
+//		c           matches character c (c != '*', '?', '\\', '[')
+//		'\\' c      matches character c
+//
+//	character-range:
+//		c           matches character c (c != '\\', '-', ']')
+//		'\\' c      matches character c
+//		lo '-' hi   matches character c for lo <= c <= hi
+//
+// The pattern may describe hierarchical names such as
+// /usr/*/bin/ed (assuming the Separator is '/').
+//
+// Glob ignores file system errors such as I/O errors reading directories.
+// The only possible returned error is ErrBadPattern, when pattern
+// is malformed.
+func Glob(fs FileSystem, pattern string) (matches []string, err error) {
+	if !hasMeta(pattern) {
+		if _, err = fs.Lstat(pattern); err != nil {
+			return nil, nil
+		}
+		return []string{pattern}, nil
+	}
+
+	dir, file := filepath.Split(pattern)
+	volumeLen := 0
+	dir = cleanGlobPath(dir)
+
+	if !hasMeta(dir[volumeLen:]) {
+		return glob(fs, dir, file, nil)
+	}
+
+	// Prevent infinite recursion. See issue 15879.
+	if dir == pattern {
+		return nil, ErrBadPattern
+	}
+
+	var m []string
+	m, err = Glob(fs, dir)
+	if err != nil {
+		return
+	}
+	for _, d := range m {
+		matches, err = glob(fs, d, file, matches)
+		if err != nil {
+			return
+		}
+	}
+	return
+}
+
+// glob searches for files matching pattern in the directory dir
+// and appends them to matches. If the directory cannot be
+// opened, it returns the existing matches. New matches are
+// added in lexicographical order.
+func glob(fs FileSystem, dir, pattern string, matches []string) (m []string, e error) {
+	m = matches
+	fi, err := fs.Stat(dir)
+	if err != nil {
+		return
+	}
+	if !fi.IsDir() {
+		return
+	}
+	d, err := fs.Open(dir)
+	if err != nil {
+		return
+	}
+	if closer, ok := d.(io.Closer); ok {
+		defer closer.Close()
+	}
+
+	names, _ := d.Readdirnames(-1)
+	sort.Strings(names)
+
+	for _, n := range names {
+		matched, err := filepath.Match(pattern, n)
+		if err != nil {
+			return m, err
+		}
+		if matched {
+			m = append(m, filepath.Join(dir, n))
+		}
+	}
+	return
+}
+
+// cleanGlobPath prepares path for glob matching.
+func cleanGlobPath(path string) string {
+	switch path {
+	case "":
+		return "."
+	case string(filepath.Separator):
+		// do nothing to the path
+		return path
+	default:
+		return path[0 : len(path)-1] // chop off trailing separator
+	}
+}
+
+// hasMeta reports whether path contains any of the magic characters
+// recognized by Match.
+func hasMeta(path string) bool {
+	magicChars := `*?[`
+	return strings.ContainsAny(path, magicChars)
 }

@@ -518,3 +518,12 @@ func (fs *memfs) Stat(filename string) (os.FileInfo, error) {
 	}
 	return nil, err
 }
+
+func (fs *memfs) Close() error {
+	fs.Lock()
+	defer fs.Unlock()
+	fs.inodes = nil
+	fs.freeBlocks = nil
+	fs.blocks = nil
+	return nil
+}

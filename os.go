@@ -91,3 +91,5 @@ func (osfs *OsFs) Lstat(filename string) (os.FileInfo, error) {
 func (osfs *OsFs) Stat(filename string) (os.FileInfo, error) {
 	return os.Stat(osfs.path(filename))
 }
+
+func (osfs *OsFs) Close() error { return nil }
