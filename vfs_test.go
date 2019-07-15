@@ -121,6 +121,7 @@ func (tf *testFs) OpenFile(filename string, flags OpenFlag, perm os.FileMode) (F
 }
 
 func (tf *testFs) Readdirnames(n int) ([]string, error)       { return tf.dirnames, nil }
+func (tf *testFs) Readdir(n int) ([]os.FileInfo, error)       { return nil, nil }
 func (tf *testFs) Remove(name string) error                   { return nil }
 func (tf *testFs) Rename(old, new string) error               { return nil }
 func (tf *testFs) Mkdir(name string, perm os.FileMode) error  { return nil }
