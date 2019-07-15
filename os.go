@@ -79,6 +79,14 @@ func (osfs *OsFs) Remove(name string) error {
 	return os.Remove(osfs.path(name))
 }
 
+// Rename renames (moves) oldpath to newpath.
+// If newpath already exists and is not a directory, Rename replaces it.
+// OS-specific restrictions may apply when oldpath and newpath are in different directories.
+// If there is an error, it will be of type *LinkError.
+func (osfs *OsFs) Rename(oldpath, newpath string) error {
+	return os.Rename(osfs.path(oldpath), osfs.path(newpath))
+}
+
 // Lstat returns a FileInfo describing the named file. If the file is a
 // symbolic link, the returned FileInfo describes the symbolic link.
 // Lstat makes no attempt to follow the link. If there is an error, it

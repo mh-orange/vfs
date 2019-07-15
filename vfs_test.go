@@ -122,6 +122,7 @@ func (tf *testFs) OpenFile(filename string, flags OpenFlag, perm os.FileMode) (F
 
 func (tf *testFs) Readdirnames(n int) ([]string, error)       { return tf.dirnames, nil }
 func (tf *testFs) Remove(name string) error                   { return nil }
+func (tf *testFs) Rename(old, new string) error               { return nil }
 func (tf *testFs) Mkdir(name string, perm os.FileMode) error  { return nil }
 func (tf *testFs) Lstat(filename string) (os.FileInfo, error) { return nil, nil }
 func (tf *testFs) Stat(filename string) (os.FileInfo, error)  { return nil, nil }
@@ -412,6 +413,64 @@ func testChmodFile(fs FileSystem, filename string, want os.FileMode) func(t *tes
 	}
 }
 
+func testRemoveFile(fs FileSystem, filename string) func(t *testing.T) {
+	return func(t *testing.T) {
+		if _, err := fs.Stat(filename); IsNotExist(err) {
+			_, err = fs.Create(filename)
+			if err != nil {
+				t.Errorf("Failed to create file: %v", err)
+			}
+			_, err = fs.Stat(filename)
+
+			if err != nil {
+				t.Errorf("Failed to stat file: %v", err)
+			}
+			err = fs.Remove(filename)
+
+			if err != nil {
+				t.Errorf("Failed to remove file: %v", err)
+			}
+
+			if _, err = fs.Stat(filename); !IsNotExist(err) {
+				t.Errorf("Expected file to not exist, got %v", err)
+			}
+		} else {
+			t.Errorf("Expected ErrIsNotExist got %v", err)
+		}
+	}
+}
+
+func testRenameFile(fs FileSystem, oldFilename, newFilename string) func(t *testing.T) {
+	return func(t *testing.T) {
+		if _, err := fs.Stat(oldFilename); IsNotExist(err) {
+			_, err = fs.Create(oldFilename)
+			if err != nil {
+				t.Errorf("Failed to create file: %v", err)
+			}
+			_, err = fs.Stat(oldFilename)
+
+			if err != nil {
+				t.Errorf("Failed to stat file: %v", err)
+			}
+			err = fs.Rename(oldFilename, newFilename)
+
+			if err != nil {
+				t.Errorf("Failed to rename file: %v", err)
+			}
+
+			if _, err = fs.Stat(oldFilename); !IsNotExist(err) {
+				t.Errorf("Expected old file to not exist, got %v", err)
+			}
+
+			if _, err = fs.Stat(newFilename); err != nil {
+				t.Errorf("Expected new file to exist, got %v", err)
+			}
+		} else {
+			t.Errorf("Expected ErrIsNotExist got %v", err)
+		}
+	}
+}
+
 func TestFs(t *testing.T) {
 	for _, fs := range []FileSystem{NewMemFs(), NewTempFs()} {
 		t.Run(fmt.Sprintf("%T", fs), func(t *testing.T) {
@@ -420,6 +479,8 @@ func TestFs(t *testing.T) {
 
 			writeFile := "/tmp/write_file_test.txt"
 			createFile := "/tmp/foo/create_file_test.txt"
+			removeFile := "remove_file_test.txt"
+			renameFile := "rename_file_test.txt"
 			size := int64(blocksize*3 - 42)
 			want := make([]byte, size)
 			n, err := rand.Read(want)
@@ -432,6 +493,8 @@ func TestFs(t *testing.T) {
 			t.Run("stat file", testNotExist(fs, writeFile))
 			t.Run("write file", testWriteFile(fs, writeFile, want, startPerm))
 			t.Run("create file", testCreateFile(fs, createFile))
+			t.Run("rename file", testRenameFile(fs, removeFile, renameFile))
+			t.Run("remove file", testRemoveFile(fs, removeFile))
 			t.Run("stat file", testStatFile(fs, writeFile, size, startPerm, nil))
 			t.Run("read file", testReadFile(fs, writeFile, want))
 			t.Run("append file", testAppendFile(fs, writeFile, want))

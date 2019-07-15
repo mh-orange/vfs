@@ -26,9 +26,15 @@ import (
 
 const blocksize = int64(1024)
 
+type blockManager interface {
+	free(...int64)
+	block(int64) []byte
+	alloc() int64
+}
+
 type memInode struct {
 	sync.Mutex
-	fs *memfs
+	fs blockManager
 
 	// attributes
 	size    int64
@@ -50,11 +56,15 @@ func (inode *memInode) ModTime() time.Time {
 	return inode.modTime
 }
 
-func (inode *memInode) trunc() {
-	inode.Lock()
-	inode.fs.freen(inode.blocks)
-	inode.blocks = nil
-	inode.Unlock()
+func (inode *memInode) trunc(size int64) {
+	// determine number of blocks required for the new size
+	n := int(size / blocksize)
+	if size%blocksize > 0 {
+		n++
+	}
+	inode.fs.free(inode.blocks[n:]...)
+	inode.size = size
+	inode.blocks = inode.blocks[0:n]
 }
 
 func (inode *memInode) readBlock(block, offset int64, p []byte) (n int, err error) {
@@ -167,6 +177,19 @@ func (file *memFile) Write(p []byte) (n int, err error) {
 	return
 }
 
+func (file *memFile) trunc(size int64) (err error) {
+	file.mu.Lock()
+	defer file.mu.Unlock()
+	if file.readOnly {
+		return ErrReadOnly
+	}
+	if size < 0 || size > file.inode.Size() {
+		err = ErrSize
+	}
+	file.inode.trunc(size)
+	return
+}
+
 type dirent struct {
 	inode int64
 	name  string
@@ -201,6 +224,15 @@ func (ent *dirent) write(writer io.Writer) error {
 	return err
 }
 
+// size returns the number of bytes that this entry takes up in
+// the file
+func (ent *dirent) size() int64 {
+	// 8 bytes for inode number
+	// 8 bytes for name length
+	// n bytes for name
+	return int64(16 + len(ent.name))
+}
+
 type memDir struct {
 	file *memFile
 }
@@ -215,17 +247,47 @@ func (dir *memDir) next() (*dirent, error) {
 	return ent, ent.read(dir.file)
 }
 
-func (dir *memDir) find(name string) (inode int64, err error) {
+func (dir *memDir) findEntry(name string) (ent *dirent, err error) {
 	err = ErrNotExist
-	var ent *dirent
 	for ent, err = dir.next(); err == nil; ent, err = dir.next() {
 		if ent.name == name {
-			inode = ent.inode
 			err = nil
 			break
 		}
 	}
 	return
+}
+
+func (dir *memDir) find(name string) (inode int64, err error) {
+	ent, err := dir.findEntry(name)
+	if err == nil {
+		inode = ent.inode
+	}
+	return
+}
+
+func (dir *memDir) rename(oldname, newname string) error {
+	ent, err := dir.remove(oldname)
+	if err == nil {
+		err = dir.append(ent.inode, newname)
+	}
+	return err
+}
+
+func (dir *memDir) remove(filename string) (*dirent, error) {
+	ent, err := dir.findEntry(filename)
+	if err == nil {
+		reader := &memFile{inode: dir.file.inode, offset: dir.file.offset}
+		writer := dir.file
+		_, err = writer.Seek(-ent.size(), io.SeekCurrent)
+		if err == nil {
+			_, err = io.Copy(writer, reader)
+			if err == nil {
+				dir.file.trunc(dir.file.inode.Size() - ent.size())
+			}
+		}
+	}
+	return ent, err
 }
 
 func (dir *memDir) append(inode int64, filename string) error {
@@ -277,6 +339,8 @@ type memfs struct {
 	sync.Mutex
 
 	inodes     []*memInode
+	freeInodes []int64
+
 	freeBlocks []int64
 	blocks     [][]byte
 }
@@ -297,7 +361,7 @@ func NewMemFs() FileSystem {
 
 func (fs *memfs) block(n int64) []byte { fs.Lock(); defer fs.Unlock(); return fs.blocks[n] }
 
-func (fs *memfs) freen(blocks []int64) {
+func (fs *memfs) free(blocks ...int64) {
 	fs.Lock()
 	for _, block := range blocks {
 		fs.freeBlocks = append(fs.freeBlocks, block)
@@ -305,9 +369,13 @@ func (fs *memfs) freen(blocks []int64) {
 	fs.Unlock()
 }
 
-func (fs *memfs) free(block int64) {
+func (fs *memfs) freeInode(inode int64) {
 	fs.Lock()
-	fs.freeBlocks = append(fs.freeBlocks, block)
+	for _, block := range fs.inodes[inode].blocks {
+		fs.freeBlocks = append(fs.freeBlocks, block)
+	}
+
+	fs.freeInodes = append(fs.freeInodes, inode)
 	fs.Unlock()
 }
 
@@ -404,16 +472,24 @@ func (fs *memfs) OpenFile(filename string, flag OpenFlag, perm os.FileMode) (Fil
 					dir := &memDir{&memFile{inode: inode}}
 					if flag.has(CreateFlag) && (flag.has(RdWrFlag) || flag.has(WrOnlyFlag)) {
 						// create a new inode
-						inode = &memInode{
-							fs:   fs,
-							mode: perm,
-						}
 						fs.Lock()
-						fs.inodes = append(fs.inodes, inode)
-						inodeNum := int64(len(fs.inodes) - 1)
+						inodeNum := int64(0)
+						if len(fs.freeInodes) > 0 {
+							inodeNum = fs.freeInodes[0]
+							inode = fs.inodes[inodeNum]
+							fs.freeInodes = fs.freeInodes[1:]
+							inode.mode = perm
+						} else {
+							inode = &memInode{
+								fs:   fs,
+								mode: perm,
+							}
+							fs.inodes = append(fs.inodes, inode)
+							inodeNum = int64(len(fs.inodes) - 1)
+						}
 						fs.Unlock()
-						inode.touch()
 						dir.append(inodeNum, filepath.Base(filename))
+						inode.touch()
 					} else {
 						err = ErrNotExist
 					}
@@ -439,7 +515,7 @@ func (fs *memfs) OpenFile(filename string, flag OpenFlag, perm os.FileMode) (Fil
 				}
 
 				if flag.has(TruncFlag) {
-					inode.trunc()
+					inode.trunc(0)
 				}
 
 				if flag.has(AppendFlag) {
@@ -454,7 +530,38 @@ func (fs *memfs) OpenFile(filename string, flag OpenFlag, perm os.FileMode) (Fil
 }
 
 func (fs *memfs) Remove(name string) error {
-	return nil
+	dirname, filename := filepath.Split(name)
+	inode, err := fs.find(dirname)
+	if err == nil {
+		var ent *dirent
+		parent := &memDir{&memFile{inode: inode}}
+		ent, err = parent.remove(filename)
+		fs.freeInode(ent.inode)
+	}
+	return err
+}
+
+func (fs *memfs) Rename(oldpath, newpath string) error {
+	olddir, oldfile := filepath.Split(oldpath)
+	newdir, newfile := filepath.Split(newpath)
+	inode, err := fs.find(olddir)
+	if err == nil {
+		oldParent := &memDir{&memFile{inode: inode}}
+		if olddir == newdir {
+			oldParent.rename(oldfile, newfile)
+		} else {
+			inode, err = fs.find(newdir)
+			if err == nil {
+				newParent := &memDir{&memFile{inode: inode}}
+				var ent *dirent
+				ent, err = oldParent.remove(oldfile)
+				if err == nil {
+					newParent.append(ent.inode, newfile)
+				}
+			}
+		}
+	}
+	return err
 }
 
 func (fs *memfs) Mkdir(name string, perm os.FileMode) error {

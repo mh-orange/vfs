@@ -61,6 +61,10 @@ var (
 
 	// ErrBadPattern indicates a pattern was malformed.
 	ErrBadPattern = errors.New("syntax error in pattern")
+
+	// ErrSize is returned when an invalid size is used.  For example, a negative size
+	// given to the Truncate function
+	ErrSize = errors.New("invalid size")
 )
 
 // IsExist returns a boolean indicating whether the error is known to report
@@ -217,6 +221,12 @@ type FileSystem interface {
 	// Remove removes the named file or (empty) directory. If there is an error,
 	// it will be of type *PathError.
 	Remove(name string) error
+
+	// Rename renames (moves) oldpath to newpath.
+	// If newpath already exists and is not a directory, Rename replaces it.
+	// OS-specific restrictions may apply when oldpath and newpath are in different directories.
+	// If there is an error, it will be of type *LinkError.
+	Rename(oldpath, newpath string) error
 
 	// Lstat returns a FileInfo describing the named file. If the file is a
 	// symbolic link, the returned FileInfo describes the symbolic link.
