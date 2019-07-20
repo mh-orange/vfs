@@ -17,34 +17,36 @@ package vfs
 import (
 	"os"
 	"path/filepath"
+
+	"github.com/fsnotify/fsnotify"
 )
 
-// OsFs is a VFS backed by the operating system filesystem
-type OsFs struct {
+// osfs is a VFS backed by the operating system filesystem
+type osfs struct {
 	root string
 }
 
 // NewOsFs will return a new FileSystem that is backed by the operating
-// system functions in the 'os' package.  The OsFs filesystem will be
+// system functions in the 'os' package.  The osfs filesystem will be
 // rooted in the given path
 func NewOsFs(root string) FileSystem {
-	return &OsFs{filepath.Clean(root)}
+	return &osfs{filepath.Clean(root)}
 }
 
 // Chmod changes the mode of the named file to mode.
-func (osfs *OsFs) Chmod(filename string, mode os.FileMode) error {
-	return os.Chmod(osfs.path(filename), mode)
+func (ofs *osfs) Chmod(filename string, mode os.FileMode) error {
+	return os.Chmod(ofs.path(filename), mode)
 }
 
 // Create creates the named file with mode 0666 (before umask), truncating it if it already exists.  If
 // successful, an io.ReadWriteSeeker is returned
-func (osfs *OsFs) Create(filename string) (File, error) {
-	return os.Create(osfs.path(filename))
+func (ofs *osfs) Create(filename string) (File, error) {
+	return os.Create(ofs.path(filename))
 }
 
 // Open opens the named file for reading.  If successful, an io.ReadSeeker is returned
-func (osfs *OsFs) Open(filename string) (File, error) {
-	return os.Open(osfs.path(filename))
+func (ofs *osfs) Open(filename string) (File, error) {
+	return os.Open(ofs.path(filename))
 }
 
 // OpenFile is the generalized open call; most users will use Open or Create instead.
@@ -52,52 +54,65 @@ func (osfs *OsFs) Open(filename string) (File, error) {
 // if applicable. If successful, an io.ReadWriteSeeker is returned.  If the OpenFlag was
 // set to O_RDONLY then the io.ReadWriteSeeker itself may not be writable.  This is
 // dependent on the implementation
-func (osfs *OsFs) OpenFile(filename string, flag OpenFlag, perm os.FileMode) (File, error) {
-	return os.OpenFile(osfs.path(filename), int(flag), perm)
+func (ofs *osfs) OpenFile(filename string, flag OpenFlag, perm os.FileMode) (File, error) {
+	return os.OpenFile(ofs.path(filename), int(flag), perm)
 }
 
-func (osfs *OsFs) path(filename string) string {
+func (ofs *osfs) path(filename string) string {
 	if len(filename) == 0 {
-		return osfs.root
+		return ofs.root
 	}
 
 	if []rune(filename)[0] != filepath.Separator {
 		filename = string(append([]rune{filepath.Separator}, []rune(filename)...))
 	}
-	return filepath.Join(osfs.root, filepath.Clean(filename))
+	return filepath.Join(ofs.root, filepath.Clean(filename))
 }
 
 // Mkdir creates a new directory with the specified name and permission bits
 // (before umask). If there is an error, it will be of type *PathError.
-func (osfs *OsFs) Mkdir(name string, perm os.FileMode) error {
-	return os.Mkdir(osfs.path(name), perm)
+func (ofs *osfs) Mkdir(name string, perm os.FileMode) error {
+	return os.Mkdir(ofs.path(name), perm)
 }
 
 // Remove removes the named file or (empty) directory. If there is an error,
 // it will be of type *PathError.
-func (osfs *OsFs) Remove(name string) error {
-	return os.Remove(osfs.path(name))
+func (ofs *osfs) Remove(name string) error {
+	return os.Remove(ofs.path(name))
 }
 
 // Rename renames (moves) oldpath to newpath.
 // If newpath already exists and is not a directory, Rename replaces it.
 // OS-specific restrictions may apply when oldpath and newpath are in different directories.
 // If there is an error, it will be of type *LinkError.
-func (osfs *OsFs) Rename(oldpath, newpath string) error {
-	return os.Rename(osfs.path(oldpath), osfs.path(newpath))
+func (ofs *osfs) Rename(oldpath, newpath string) error {
+	return os.Rename(ofs.path(oldpath), ofs.path(newpath))
 }
 
 // Lstat returns a FileInfo describing the named file. If the file is a
 // symbolic link, the returned FileInfo describes the symbolic link.
 // Lstat makes no attempt to follow the link. If there is an error, it
 // will be of type *PathError.
-func (osfs *OsFs) Lstat(filename string) (os.FileInfo, error) {
-	return os.Lstat(osfs.path(filename))
+func (ofs *osfs) Lstat(filename string) (os.FileInfo, error) {
+	return os.Lstat(ofs.path(filename))
 }
 
 // Stat returns the FileInfo structure describing file.
-func (osfs *OsFs) Stat(filename string) (os.FileInfo, error) {
-	return os.Stat(osfs.path(filename))
+func (ofs *osfs) Stat(filename string) (os.FileInfo, error) {
+	return os.Stat(ofs.path(filename))
 }
 
-func (osfs *OsFs) Close() error { return nil }
+func (ofs *osfs) Close() error { return nil }
+
+func (ofs *osfs) Watcher(events chan<- *Event) (Watcher, error) {
+	fswatcher, err := fsnotify.NewWatcher()
+	watcher := &osWatcher{
+		fs:      ofs,
+		watcher: fswatcher,
+		events:  events,
+		closer:  make(chan bool, 2),
+	}
+	go watcher.eventLoop()
+	go watcher.errorLoop()
+	return watcher, err
+}

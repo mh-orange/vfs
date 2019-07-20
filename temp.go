@@ -10,6 +10,8 @@ type tempfs struct {
 	tempdir string
 }
 
+// NewTempFs returns an Os backed filesystem rooted in a temp directory
+// that is deleted when the filesystem is closed
 func NewTempFs() FileSystem {
 	tempdir, _ := ioutil.TempDir("", "osfs_test")
 	return &tempfs{
