@@ -304,3 +304,40 @@ func hasMeta(path string) bool {
 	magicChars := `*?[`
 	return strings.ContainsAny(path, magicChars)
 }
+
+// Watch will setup a Watcher recursively watching the path and
+// sending events down to the events channel.  If a new directory
+// is created in the tree then the watcher will be automatically updated
+func Watch(fs FileSystem, path string, events chan<- Event) (watcher Watcher, err error) {
+	fi, err := fs.Stat(path)
+	if err == nil {
+		ev := make(chan Event, len(events))
+		watcher, err = fs.Watcher(ev)
+
+		if err == nil {
+			if fi.IsDir() {
+				Walk(fs, path, func(path string, info os.FileInfo, err error) error {
+					if err == nil {
+						if info.IsDir() {
+							watcher.Watch(path)
+						}
+					}
+					return err
+				})
+			}
+
+			go func() {
+				for event := range ev {
+					events <- event
+					// don't wait
+					go func(event Event) {
+						if fi, err := fs.Stat(event.Path); err == nil && fi.IsDir() {
+							watcher.Watch(event.Path)
+						}
+					}(event)
+				}
+			}()
+		}
+	}
+	return watcher, err
+}
