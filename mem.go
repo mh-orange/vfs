@@ -454,17 +454,18 @@ func (fs *memfs) notify(t EventType, inode memInodeNum, name string) {
 	if watchers, found := fs.watchers[inode]; found {
 		for watcher, dir := range watchers {
 			select {
-			case watcher.events <- &Event{Type: t, Path: path.Join(dir, name)}:
+			case watcher.events <- Event{Type: t, Path: path.Join(dir, name)}:
 			default:
 			}
 		}
 	}
 }
 
-func (fs *memfs) Watcher(events chan<- *Event) (Watcher, error) {
+func (fs *memfs) Watcher(events chan<- Event) (Watcher, error) {
 	mw := &memWatcher{
 		fs:     fs,
 		events: events,
+		paths:  make(map[string]struct{}),
 	}
 	return mw, nil
 }

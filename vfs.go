@@ -179,5 +179,5 @@ type FileSystem interface {
 	// events at the rate expected.  If the channel buffer becomes full a
 	// Watcher will drop the event.  The provided channel will be closed by
 	// the watcher instance when the watcher itself is closed
-	Watcher(chan<- *Event) (Watcher, error)
+	Watcher(chan<- Event) (Watcher, error)
 }

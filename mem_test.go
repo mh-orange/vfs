@@ -347,9 +347,9 @@ func TestMemWatch(t *testing.T) {
 		name      string
 		watchPath string
 		execute   func(fs *memfs)
-		want      []*Event
+		want      []Event
 	}{
-		{"CreateEvent", "/", func(fs *memfs) { fs.Create("/foo.txt") }, []*Event{{CreateEvent, "/foo.txt", nil}}},
+		{"CreateEvent", "/", func(fs *memfs) { fs.Create("/foo.txt") }, []Event{{CreateEvent, "/foo.txt", nil}}},
 		{
 			name:      "ModifyEvent",
 			watchPath: "/",
@@ -357,7 +357,7 @@ func TestMemWatch(t *testing.T) {
 				f, _ := fs.Create("/foo.txt")
 				f.Write([]byte{1, 2, 3, 4, 5})
 			},
-			want: []*Event{{CreateEvent, "/foo.txt", nil}, {ModifyEvent, "/foo.txt", nil}},
+			want: []Event{{CreateEvent, "/foo.txt", nil}, {ModifyEvent, "/foo.txt", nil}},
 		},
 		{
 			name:      "RenameEvent",
@@ -366,7 +366,7 @@ func TestMemWatch(t *testing.T) {
 				fs.Create("/foo.txt")
 				fs.Rename("/foo.txt", "/bar.txt")
 			},
-			want: []*Event{{CreateEvent, "/foo.txt", nil}, {CreateEvent, "/bar.txt", nil}, {RenameEvent, "/foo.txt", nil}},
+			want: []Event{{CreateEvent, "/foo.txt", nil}, {CreateEvent, "/bar.txt", nil}, {RenameEvent, "/foo.txt", nil}},
 		},
 		{
 			name:      "RemoveEvent",
@@ -375,7 +375,7 @@ func TestMemWatch(t *testing.T) {
 				fs.Create("/foo.txt")
 				fs.Remove("/foo.txt")
 			},
-			want: []*Event{{CreateEvent, "/foo.txt", nil}, {RemoveEvent, "/foo.txt", nil}},
+			want: []Event{{CreateEvent, "/foo.txt", nil}, {RemoveEvent, "/foo.txt", nil}},
 		},
 		{
 			name:      "ModifyEvent",
@@ -384,14 +384,14 @@ func TestMemWatch(t *testing.T) {
 				file, _ := fs.Create("/foo.txt")
 				file.Write([]byte{116, 104, 105, 115, 32, 105, 115, 32, 110, 111, 116, 32, 116, 104, 101, 32, 116, 101, 115, 116, 32, 121, 111, 117, 23, 114, 101, 32, 108, 111, 111, 107, 105, 110, 103, 32, 102, 111, 114})
 			},
-			want: []*Event{{CreateEvent, "/foo.txt", nil}, {ModifyEvent, "/foo.txt", nil}},
+			want: []Event{{CreateEvent, "/foo.txt", nil}, {ModifyEvent, "/foo.txt", nil}},
 		},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			fs := NewMemFs().(*memfs)
-			events := make(chan *Event, 10)
+			events := make(chan Event, 10)
 			watcher, err := fs.Watcher(events)
 			if err == nil {
 				watcher.Watch(test.watchPath)
@@ -403,7 +403,7 @@ func TestMemWatch(t *testing.T) {
 					if len(test.want) > 0 {
 						want := test.want[0]
 						test.want = test.want[1:]
-						if *want != *got {
+						if want != got {
 							t.Errorf("%s: Wanted event %v got %v", test.name, want, got)
 						}
 					} else {

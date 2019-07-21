@@ -104,7 +104,7 @@ func (ofs *osfs) Stat(filename string) (os.FileInfo, error) {
 
 func (ofs *osfs) Close() error { return nil }
 
-func (ofs *osfs) Watcher(events chan<- *Event) (Watcher, error) {
+func (ofs *osfs) Watcher(events chan<- Event) (Watcher, error) {
 	fswatcher, err := fsnotify.NewWatcher()
 	watcher := &osWatcher{
 		fs:      ofs,

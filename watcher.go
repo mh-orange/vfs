@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path"
 	"strings"
+	"sync"
 
 	"github.com/fsnotify/fsnotify"
 )
@@ -13,7 +14,7 @@ import (
 type EventType uint32
 
 func (wm EventType) matches(other EventType) bool {
-	return wm&other > 0
+	return wm&other == other
 }
 
 const (
@@ -42,25 +43,33 @@ type Watcher interface {
 }
 
 type memWatcher struct {
+	sync.Mutex
 	fs     *memfs
-	paths  []string
-	events chan<- *Event
+	paths  map[string]struct{}
+	events chan<- Event
 }
 
 func (mw *memWatcher) Watch(path string) error {
+	mw.Lock()
+	defer mw.Unlock()
 	err := mw.fs.watch(mw, path)
 	if err == nil {
-		mw.paths = append(mw.paths, path)
+		mw.paths[path] = struct{}{}
 	}
 	return err
 }
 
 func (mw *memWatcher) Remove(path string) error {
+	mw.Lock()
+	defer mw.Unlock()
+	delete(mw.paths, path)
 	return mw.fs.removeWatch(mw, path)
 }
 
 func (mw *memWatcher) Close() error {
-	for _, path := range mw.paths {
+	mw.Lock()
+	defer mw.Unlock()
+	for path := range mw.paths {
 		// ignore the error because we don't care if a path is
 		// not found
 		mw.fs.removeWatch(mw, path)
@@ -72,13 +81,13 @@ func (mw *memWatcher) Close() error {
 type osWatcher struct {
 	fs      *osfs
 	watcher *fsnotify.Watcher
-	events  chan<- *Event
+	events  chan<- Event
 	closer  chan bool
 }
 
 func (osw *osWatcher) eventLoop() {
 	for e := range osw.watcher.Events {
-		event := &Event{
+		event := Event{
 			Path: strings.TrimPrefix(e.Name, osw.fs.root),
 		}
 		switch e.Op {
@@ -101,7 +110,7 @@ func (osw *osWatcher) eventLoop() {
 func (osw *osWatcher) errorLoop() {
 	for err := range osw.watcher.Errors {
 		if err != nil {
-			osw.events <- &Event{Error: err, Type: ErrorEvent}
+			osw.events <- Event{Error: err, Type: ErrorEvent}
 		}
 	}
 	osw.closer <- true
