@@ -30,6 +30,7 @@ type osfs struct {
 // system functions in the 'os' package.  The osfs filesystem will be
 // rooted in the given path
 func NewOsFs(root string) FileSystem {
+	root, _ = filepath.Abs(root)
 	return &osfs{filepath.Clean(root)}
 }
 
