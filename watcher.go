@@ -129,8 +129,6 @@ func (osw *osWatcher) Close() error {
 	if err == nil {
 		<-osw.closer
 		<-osw.closer
-	}
-	if osw.events != nil {
 		close(osw.events)
 	}
 	return err

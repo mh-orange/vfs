@@ -27,7 +27,7 @@ func TestOsPath(t *testing.T) {
 
 func TestOsWatcher(t *testing.T) {
 	fs := NewTempFs()
-	watcher, err := fs.Watcher(nil)
+	watcher, err := fs.Watcher(make(chan Event))
 	if err == nil {
 		// make sure we can close it, that's about the most we can do.. at least
 		// it makes sure the go routines exit since they can't exit until writing
